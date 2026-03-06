@@ -1,27 +1,45 @@
+from urllib.parse import quote_plus
+
 import pymysql
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 pymysql.install_as_MySQLdb()
+
 
 class Base(DeclarativeBase):
     pass
 
+
 def build_mysql_url(host: str, port: str, user: str, password: str, db: str) -> str:
+    host = host.strip()
+    port = port.strip()
+    user = quote_plus(user.strip())
+    password = quote_plus(password.strip())
+    db = quote_plus(db.strip())
+
     return f"mysql+pymysql://{user}:{password}@{host}:{port}/{db}"
+
 
 def make_engine(db_url: str) -> Engine:
     return create_engine(
         db_url,
         pool_pre_ping=True,
         pool_recycle=1800,
+        pool_timeout=30,
         echo=False,
         future=True,
     )
 
+
 def make_session_factory(engine: Engine):
-    return sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    return sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=engine,
+    )
+
 
 def db_dependency(SessionLocal):
     def _get_db():
@@ -30,4 +48,5 @@ def db_dependency(SessionLocal):
             yield db
         finally:
             db.close()
+
     return _get_db
