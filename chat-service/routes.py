@@ -24,7 +24,7 @@ def get_or_client() -> OpenAI:
         base_url="https://openrouter.ai/api/v1",
         default_headers={
             # Optional but recommended for attribution/analytics on OpenRouter:
-            "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "http://localhost"),
+            "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "http://localhost:5173"),
             "X-Title": os.getenv("OPENROUTER_APP_NAME", "course-reco-chat-service"),
         },
     )
