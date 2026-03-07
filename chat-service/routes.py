@@ -3,16 +3,31 @@ from sqlalchemy.orm import Session
 from openai import OpenAI
 from openai import RateLimitError
 from openai.types.chat import ChatCompletionMessageParam
-import os, time, random
+import os
+import time
+import random
 from typing import cast
 
 from shared.database import db_dependency
-from .schemas import ChatIn, ChatOut
-from .crud import save_message, recent_messages
+from .schemas import (
+    ChatIn,
+    ChatOut,
+    ConversationCreateOut,
+    ConversationOut,
+    MessageOut,
+)
+from .crud import (
+    save_message,
+    recent_messages,
+    create_conversation,
+    get_conversation,
+    list_conversations,
+)
 from dotenv import load_dotenv
 
 load_dotenv()
 router = APIRouter()
+
 
 def get_or_client() -> OpenAI:
     api_key = os.getenv("OPENROUTER_API_KEY")
@@ -28,6 +43,7 @@ def get_or_client() -> OpenAI:
         },
     )
 
+
 def call_with_backoff(fn, max_retries: int = 5):
     base = 0.5
     for attempt in range(max_retries):
@@ -37,6 +53,7 @@ def call_with_backoff(fn, max_retries: int = 5):
             if attempt == max_retries - 1:
                 raise
             time.sleep(min(15.0, base * (2 ** attempt)) + random.uniform(0, 0.25))
+
 
 def build_router(SessionLocal):
     get_db = db_dependency(SessionLocal)
@@ -50,8 +67,23 @@ def build_router(SessionLocal):
         except ValueError:
             raise HTTPException(status_code=401, detail="Invalid X-User-ID header")
 
-    def build_messages(db: Session, uid: int, user_text: str, limit: int = 12, extra_system: str | None = None):
-        history = list(reversed(recent_messages(db, uid, limit=limit)))
+    def ensure_conversation(db: Session, uid: int, conversation_id: int):
+        convo = get_conversation(db, uid, conversation_id)
+        if not convo:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return convo
+
+    def build_messages(
+        db: Session,
+        uid: int,
+        conversation_id: int,
+        user_text: str,
+        limit: int = 12,
+        extra_system: str | None = None,
+    ):
+        history = list(
+            reversed(recent_messages(db, uid, conversation_id=conversation_id, limit=limit))
+        )
 
         system_prompt = (
             "You are a helpful AI chat assistant. "
@@ -70,17 +102,19 @@ def build_router(SessionLocal):
         msgs.append({"role": "user", "content": user_text})
         return cast(list[ChatCompletionMessageParam], msgs)
 
-    def call_llm(db: Session, uid: int, user_text: str) -> str:
+    def call_llm(db: Session, uid: int, conversation_id: int, user_text: str) -> str:
         client = get_or_client()
         model = os.getenv("OPENROUTER_MODEL", "liquid/lfm-2.5-1.2b-thinking:free")
 
-        input_messages = build_messages(db, uid, user_text, limit=10)
+        input_messages = build_messages(db, uid, conversation_id, user_text, limit=10)
 
         try:
-            resp = call_with_backoff(lambda: client.chat.completions.create(
-                model=model,
-                messages=input_messages,
-            ))
+            resp = call_with_backoff(
+                lambda: client.chat.completions.create(
+                    model=model,
+                    messages=input_messages,
+                )
+            )
             if resp is not None and hasattr(resp, "choices") and resp.choices:
                 reply = (resp.choices[0].message.content or "").strip()
             else:
@@ -91,20 +125,76 @@ def build_router(SessionLocal):
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"LLM provider error: {type(e).__name__}")
 
+    @router.post("/conversations", response_model=ConversationCreateOut)
+    def create_new_conversation(request: Request, db: Session = Depends(get_db)):
+        uid = current_user_id(request)
+        convo = create_conversation(db, uid)
+        return ConversationCreateOut(id=convo.id, title=convo.title)
+
+    @router.get("/conversations", response_model=list[ConversationOut])
+    def get_conversations(request: Request, db: Session = Depends(get_db)):
+        uid = current_user_id(request)
+        convos = list_conversations(db, uid, limit=50)
+        return [
+            ConversationOut(
+                id=c.id,
+                title=c.title,
+                created_at=c.created_at,
+                updated_at=c.updated_at,
+            )
+            for c in convos
+        ]
+
+    @router.get("/conversations/{conversation_id}/messages", response_model=list[MessageOut])
+    def get_conversation_messages(
+        conversation_id: int,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        uid = current_user_id(request)
+        ensure_conversation(db, uid, conversation_id)
+
+        msgs = recent_messages(db, uid, conversation_id=conversation_id, limit=100)
+        return [MessageOut(role=m.role, content=m.content) for m in reversed(msgs)]
+
+    @router.post("/conversations/{conversation_id}", response_model=ChatOut)
+    def chat_in_conversation(
+        conversation_id: int,
+        payload: ChatIn,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        uid = current_user_id(request)
+        ensure_conversation(db, uid, conversation_id)
+
+        save_message(db, uid, conversation_id, "user", payload.message)
+        reply = call_llm(db, uid, conversation_id, payload.message)
+        save_message(db, uid, conversation_id, "assistant", reply)
+
+        return ChatOut(reply=reply)
+
+    # optional backward compatibility
     @router.post("/", response_model=ChatOut)
     def chat(payload: ChatIn, request: Request, db: Session = Depends(get_db)):
         uid = current_user_id(request)
 
-        save_message(db, uid, "user", payload.message)
-        reply = call_llm(db, uid, payload.message)
-        save_message(db, uid, "assistant", reply)
+        convo = create_conversation(db, uid)
+        save_message(db, uid, convo.id, "user", payload.message)
+        reply = call_llm(db, uid, convo.id, payload.message)
+        save_message(db, uid, convo.id, "assistant", reply)
 
         return ChatOut(reply=reply)
 
     @router.get("/recent", response_model=list[dict])
     def recent(request: Request, db: Session = Depends(get_db)):
         uid = current_user_id(request)
-        msgs = recent_messages(db, uid, limit=20)
+        convos = list_conversations(db, uid, limit=1)
+
+        if not convos:
+            return []
+
+        latest = convos[0]
+        msgs = recent_messages(db, uid, conversation_id=latest.id, limit=20)
         return [{"role": m.role, "content": m.content} for m in reversed(msgs)]
 
     return router
