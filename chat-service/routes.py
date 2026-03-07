@@ -23,8 +23,7 @@ def get_or_client() -> OpenAI:
         api_key=api_key,
         base_url="https://openrouter.ai/api/v1",
         default_headers={
-            # Optional but recommended for attribution/analytics on OpenRouter:
-            "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "http://localhost"),
+            "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "http://localhost:5173"),
             "X-Title": os.getenv("OPENROUTER_APP_NAME", "course-reco-chat-service"),
         },
     )
@@ -43,8 +42,13 @@ def build_router(SessionLocal):
     get_db = db_dependency(SessionLocal)
 
     def current_user_id(request: Request) -> int:
-        user = getattr(request.state, "user", None)
-        return int(user["sub"]) if user and "sub" in user else 0
+        uid = request.headers.get("X-User-ID")
+        if not uid:
+            raise HTTPException(status_code=401, detail="Missing X-User-ID header")
+        try:
+            return int(uid)
+        except ValueError:
+            raise HTTPException(status_code=401, detail="Invalid X-User-ID header")
 
     def build_messages(db: Session, uid: int, user_text: str, limit: int = 12, extra_system: str | None = None):
         history = list(reversed(recent_messages(db, uid, limit=limit)))
@@ -65,7 +69,6 @@ def build_router(SessionLocal):
 
         msgs.append({"role": "user", "content": user_text})
         return cast(list[ChatCompletionMessageParam], msgs)
-
 
     def call_llm(db: Session, uid: int, user_text: str) -> str:
         client = get_or_client()
