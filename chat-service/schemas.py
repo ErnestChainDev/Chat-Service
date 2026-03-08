@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class ChatIn(BaseModel):
@@ -14,6 +14,8 @@ class ConversationCreateOut(BaseModel):
     id: int
     title: str
 
+    model_config = ConfigDict(from_attributes=True)
+
 
 class ConversationOut(BaseModel):
     id: int
@@ -21,7 +23,16 @@ class ConversationOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DeleteOut(BaseModel):
+    message: str
+
+    model_config = ConfigDict(from_attributes=True)
 
 class MessageOut(BaseModel):
     role: str
     content: str
+
+    model_config = ConfigDict(from_attributes=True)

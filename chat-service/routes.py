@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, Request, HTTPException
 from sqlalchemy.orm import Session
-from openai import OpenAI
-from openai import RateLimitError
+from openai import OpenAI, RateLimitError
 from openai.types.chat import ChatCompletionMessageParam
 import os
 import time
@@ -22,6 +21,8 @@ from .crud import (
     create_conversation,
     get_conversation,
     list_conversations,
+    delete_conversation,
+    delete_recent_conversation,
 )
 from dotenv import load_dotenv
 
@@ -77,12 +78,18 @@ def build_router(SessionLocal):
         db: Session,
         uid: int,
         conversation_id: int,
-        user_text: str,
         limit: int = 12,
         extra_system: str | None = None,
     ):
         history = list(
-            reversed(recent_messages(db, uid, conversation_id=conversation_id, limit=limit))
+            reversed(
+                recent_messages(
+                    db,
+                    uid,
+                    conversation_id=conversation_id,
+                    limit=limit,
+                )
+            )
         )
 
         system_prompt = (
@@ -99,14 +106,13 @@ def build_router(SessionLocal):
             if m.role in ("user", "assistant") and m.content:
                 msgs.append({"role": m.role, "content": m.content})
 
-        msgs.append({"role": "user", "content": user_text})
         return cast(list[ChatCompletionMessageParam], msgs)
 
-    def call_llm(db: Session, uid: int, conversation_id: int, user_text: str) -> str:
+    def call_llm(db: Session, uid: int, conversation_id: int) -> str:
         client = get_or_client()
         model = os.getenv("OPENROUTER_MODEL", "liquid/lfm-2.5-1.2b-thinking:free")
 
-        input_messages = build_messages(db, uid, conversation_id, user_text, limit=10)
+        input_messages = build_messages(db, uid, conversation_id, limit=10)
 
         try:
             resp = call_with_backoff(
@@ -119,11 +125,19 @@ def build_router(SessionLocal):
                 reply = (resp.choices[0].message.content or "").strip()
             else:
                 reply = ""
+
             return reply or "Sorry—I'm having trouble generating a response right now."
+
         except RateLimitError:
-            raise HTTPException(status_code=429, detail="Rate limited. Please retry in a few seconds.")
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limited. Please retry in a few seconds.",
+            )
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"LLM provider error: {type(e).__name__}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM provider error: {type(e).__name__}",
+            )
 
     @router.post("/conversations", response_model=ConversationCreateOut)
     def create_new_conversation(request: Request, db: Session = Depends(get_db)):
@@ -168,24 +182,23 @@ def build_router(SessionLocal):
         ensure_conversation(db, uid, conversation_id)
 
         save_message(db, uid, conversation_id, "user", payload.message)
-        reply = call_llm(db, uid, conversation_id, payload.message)
+        reply = call_llm(db, uid, conversation_id)
         save_message(db, uid, conversation_id, "assistant", reply)
 
         return ChatOut(reply=reply)
 
-    # optional backward compatibility
     @router.post("/", response_model=ChatOut)
     def chat(payload: ChatIn, request: Request, db: Session = Depends(get_db)):
         uid = current_user_id(request)
 
         convo = create_conversation(db, uid)
         save_message(db, uid, convo.id, "user", payload.message)
-        reply = call_llm(db, uid, convo.id, payload.message)
+        reply = call_llm(db, uid, convo.id)
         save_message(db, uid, convo.id, "assistant", reply)
 
         return ChatOut(reply=reply)
 
-    @router.get("/recent", response_model=list[dict])
+    @router.get("/recent", response_model=list[MessageOut])
     def recent(request: Request, db: Session = Depends(get_db)):
         uid = current_user_id(request)
         convos = list_conversations(db, uid, limit=1)
@@ -195,6 +208,30 @@ def build_router(SessionLocal):
 
         latest = convos[0]
         msgs = recent_messages(db, uid, conversation_id=latest.id, limit=20)
-        return [{"role": m.role, "content": m.content} for m in reversed(msgs)]
+        return [MessageOut(role=m.role, content=m.content) for m in reversed(msgs)]
+
+    @router.delete("/recent")
+    def delete_recent(request: Request, db: Session = Depends(get_db)):
+        uid = current_user_id(request)
+        deleted = delete_recent_conversation(db, uid)
+
+        if not deleted:
+            raise HTTPException(status_code=404, detail="No recent conversation found")
+
+        return {"message": "Recent conversation deleted successfully"}
+
+    @router.delete("/conversations/{conversation_id}")
+    def delete_one_conversation(
+        conversation_id: int,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        uid = current_user_id(request)
+        deleted = delete_conversation(db, uid, conversation_id)
+
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        return {"message": "Conversation deleted successfully"}
 
     return router
