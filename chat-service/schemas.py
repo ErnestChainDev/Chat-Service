@@ -1,13 +1,20 @@
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel, Field, ConfigDict
 
 
 class ChatIn(BaseModel):
-    message: str = Field(..., min_length=1, max_length=4000)
+    message: str = Field(
+        ...,
+        min_length=1,
+        max_length=4000,
+        description="User message input",
+    )
 
 
 class ChatOut(BaseModel):
     reply: str
+    tokens_used: int | None = None
 
 
 class ConversationCreateOut(BaseModel):
@@ -29,10 +36,10 @@ class ConversationOut(BaseModel):
 class DeleteOut(BaseModel):
     message: str
 
-    model_config = ConfigDict(from_attributes=True)
 
 class MessageOut(BaseModel):
-    role: str
+    role: Literal["user", "assistant"]
     content: str
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import Integer, String, Text, ForeignKey, DateTime
+from sqlalchemy import Integer, String, Text, ForeignKey, DateTime, Index, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from shared.database import Base
 
@@ -10,12 +10,17 @@ class ChatConversation(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, index=True)
-    title: Mapped[str] = mapped_column(String(255), default="New Chat")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    title: Mapped[str] = mapped_column(String(255), default="New Chat", index=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
     )
 
     messages: Mapped[list["ChatMessage"]] = relationship(
@@ -28,14 +33,27 @@ class ChatConversation(Base):
 class ChatMessage(Base):
     __tablename__ = "chat_message"
 
+    __table_args__ = (
+        Index("ix_chat_message_user_convo", "user_id", "conversation_id"),
+        CheckConstraint("role IN ('user', 'assistant')", name="check_role_valid"),
+    )
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, index=True)
+
     conversation_id: Mapped[int] = mapped_column(
         ForeignKey("chat_conversation.id", ondelete="CASCADE"),
         index=True,
     )
+
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    conversation: Mapped["ChatConversation"] = relationship(back_populates="messages")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    conversation: Mapped["ChatConversation"] = relationship(
+        back_populates="messages"
+    )

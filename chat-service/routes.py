@@ -5,7 +5,7 @@ from openai.types.chat import ChatCompletionMessageParam
 import os
 import time
 import random
-from typing import cast
+from typing import cast, Literal
 
 from shared.database import db_dependency
 from .schemas import (
@@ -74,11 +74,12 @@ def build_router(SessionLocal):
             raise HTTPException(status_code=404, detail="Conversation not found")
         return convo
 
+    # ✅ IMPROVED MESSAGE BUILDER
     def build_messages(
         db: Session,
         uid: int,
         conversation_id: int,
-        limit: int = 12,
+        limit: int = 50,  # 🔥 increased memory
         extra_system: str | None = None,
     ):
         history = list(
@@ -92,9 +93,27 @@ def build_router(SessionLocal):
             )
         )
 
+        # 🔥 NEW POWERFUL PROMPT
         system_prompt = (
-            "You are a helpful AI chat assistant. "
-            "Be concise, correct, and ask at most one clarifying question when needed."
+            "You are a highly intelligent, helpful, and expressive AI assistant. "
+            "Your goal is to provide clear, detailed, and well-structured answers.\n\n"
+
+            "Response guidelines:\n"
+            "- Always respond in multiple paragraphs (minimum 2–4 paragraphs when appropriate).\n"
+            "- Expand your explanation naturally depending on the complexity of the question.\n"
+            "- Do NOT give overly short or one-line answers.\n"
+            "- Provide examples, explanations, and context whenever helpful.\n"
+            "- For simple questions, give a slightly expanded explanation.\n"
+            "- For complex questions, provide deep, structured, and insightful answers.\n"
+            "- Maintain a natural, human-like conversational tone.\n"
+            "- Avoid unnecessary repetition, but do not limit response length artificially.\n"
+            "- Prioritize clarity, depth, and usefulness.\n\n"
+
+            "Structure:\n"
+            "- Start with a clear answer.\n"
+            "- Follow with explanation.\n"
+            "- Add examples if needed.\n"
+            "- End with helpful insight or summary."
         )
 
         if extra_system:
@@ -108,20 +127,24 @@ def build_router(SessionLocal):
 
         return cast(list[ChatCompletionMessageParam], msgs)
 
+    # ✅ IMPROVED LLM CALL
     def call_llm(db: Session, uid: int, conversation_id: int) -> str:
         client = get_or_client()
-        model = os.getenv("OPENROUTER_MODEL", "liquid/lfm-2.5-1.2b-thinking:free")
+        model = os.getenv("OPENROUTER_MODEL", "qwen/qwen3.6-plus:free")
 
-        input_messages = build_messages(db, uid, conversation_id, limit=10)
+        input_messages = build_messages(db, uid, conversation_id, limit=50)
 
         try:
             resp = call_with_backoff(
                 lambda: client.chat.completions.create(
                     model=model,
                     messages=input_messages,
+                    max_tokens=5000,  # 🔥 longer responses
+                    temperature=0.7,  # 🔥 more natural
                 )
             )
-            if resp is not None and hasattr(resp, "choices") and resp.choices:
+
+            if resp and hasattr(resp, "choices") and resp.choices:
                 reply = (resp.choices[0].message.content or "").strip()
             else:
                 reply = ""
@@ -138,6 +161,8 @@ def build_router(SessionLocal):
                 status_code=502,
                 detail=f"LLM provider error: {type(e).__name__}",
             )
+
+    # ================= ROUTES =================
 
     @router.post("/conversations", response_model=ConversationCreateOut)
     def create_new_conversation(request: Request, db: Session = Depends(get_db)):
@@ -169,7 +194,7 @@ def build_router(SessionLocal):
         ensure_conversation(db, uid, conversation_id)
 
         msgs = recent_messages(db, uid, conversation_id=conversation_id, limit=100)
-        return [MessageOut(role=m.role, content=m.content) for m in reversed(msgs)]
+        return [MessageOut(role=cast(Literal["user", "assistant"], m.role), content=m.content, created_at=m.created_at) for m in reversed(msgs)]
 
     @router.post("/conversations/{conversation_id}", response_model=ChatOut)
     def chat_in_conversation(
@@ -208,7 +233,7 @@ def build_router(SessionLocal):
 
         latest = convos[0]
         msgs = recent_messages(db, uid, conversation_id=latest.id, limit=20)
-        return [MessageOut(role=m.role, content=m.content) for m in reversed(msgs)]
+        return [MessageOut(role=cast(Literal["user", "assistant"], m.role), content=m.content, created_at=m.created_at) for m in reversed(msgs)]
 
     @router.delete("/recent")
     def delete_recent(request: Request, db: Session = Depends(get_db)):

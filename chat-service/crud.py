@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 from .models import ChatMessage, ChatConversation
@@ -52,20 +52,15 @@ def save_message(
     )
     db.add(m)
 
-    convo = (
-        db.query(ChatConversation)
-        .filter(
-            ChatConversation.id == conversation_id,
-            ChatConversation.user_id == user_id,
-        )
-        .first()
-    )
-    if convo:
-        convo.updated_at = datetime.utcnow()
+    # ✅ faster fetch
+    convo = db.get(ChatConversation, conversation_id)
+
+    if convo and convo.user_id == user_id:
+        convo.updated_at = datetime.now(timezone.utc)
 
         if convo.title == "New Chat" and role == "user":
             trimmed = content.strip()
-            convo.title = trimmed[:60] if trimmed else "New Chat"
+            convo.title = trimmed.split("\n")[0][:60] if trimmed else "New Chat"
 
     try:
         db.commit()
@@ -86,7 +81,7 @@ def recent_messages(db: Session, user_id: int, conversation_id: int, limit: int 
     )
 
     if hasattr(ChatMessage, "created_at"):
-        q = q.order_by(ChatMessage.created_at.desc())  # type: ignore[attr-defined]
+        q = q.order_by(ChatMessage.created_at.desc())  # type: ignore
     else:
         q = q.order_by(ChatMessage.id.desc())
 
