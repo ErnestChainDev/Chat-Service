@@ -39,7 +39,7 @@ def get_or_client() -> OpenAI:
         api_key=api_key,
         base_url="https://openrouter.ai/api/v1",
         default_headers={
-            "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "http://localhost:5173"),
+            "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "https://learners-ai.vercel.app"),
             "X-Title": os.getenv("OPENROUTER_APP_NAME", "course-reco-chat-service"),
         },
     )
@@ -132,15 +132,15 @@ def build_router(SessionLocal):
         client = get_or_client()
         model = os.getenv("OPENROUTER_MODEL", "qwen/qwen3.6-plus:free")
 
-        input_messages = build_messages(db, uid, conversation_id, limit=50)
+        input_messages = build_messages(db, uid, conversation_id, limit=10)
 
         try:
             resp = call_with_backoff(
                 lambda: client.chat.completions.create(
                     model=model,
                     messages=input_messages,
-                    max_tokens=5000,  # 🔥 longer responses
-                    temperature=0.7,  # 🔥 more natural
+                    max_tokens=1000,  # 🔥 longer responses
+                    temperature=0.5,  # 🔥 more natural
                 )
             )
 
